@@ -1,15 +1,12 @@
-import javax.crypto.*;
-import javax.crypto.spec.IvParameterSpec;
-import javax.crypto.spec.SecretKeySpec;
 import java.io.*;
-import java.math.BigInteger;
-import java.net.Socket;
+import java.net.*;
 import java.security.*;
-import java.security.spec.X509EncodedKeySpec;
-import java.util.Arrays;
-import java.util.Scanner;
+import java.security.spec.*;
+import java.util.*;
+import javax.crypto.*;
+import javax.crypto.spec.*;
 
-public class cliente {
+public class Cliente {
     private static final String SERVER_ADDRESS = "localhost";
     private static final int SERVER_PORT = 8080;
     private static final int AES_KEY_LENGTH = 256;
@@ -18,23 +15,30 @@ public class cliente {
     private Socket socket;
     private DataInputStream input;
     private DataOutputStream output;
-    private SecretKey aesKey; // K_AB1
-    private SecretKey hmacKey; // K_AB2
-    private PublicKey serverRSAPublicKey; // Clave pública RSA del servidor
+    private SecretKey aesKey;
+    private SecretKey hmacKey;
+    private PublicKey serverRSAPublicKey;
+    private String scenario;
+    private int clientId;
+    private int repetition;
 
-    public cliente() throws Exception {
-        // Inicializar socket y flujos
+    public Cliente() throws Exception {
         socket = new Socket(SERVER_ADDRESS, SERVER_PORT);
         input = new DataInputStream(socket.getInputStream());
         output = new DataOutputStream(socket.getOutputStream());
-
-        // Cargar clave pública RSA del servidor (puedes cargarla desde un archivo o recibirla)
-        // Para este ejemplo, asumimos que se recibe del servidor
         serverRSAPublicKey = receiveRSAPublicKey();
+        scenario = "Iterativo";
+        clientId = 1;
+        repetition = 1;
+    }
+
+    public void setScenario(String scenario, int clientId, int repetition) {
+        this.scenario = scenario;
+        this.clientId = clientId;
+        this.repetition = repetition;
     }
 
     private PublicKey receiveRSAPublicKey() throws Exception {
-        // Recibir longitud de la clave pública
         int keyLength = input.readInt();
         byte[] keyBytes = new byte[keyLength];
         input.readFully(keyBytes);
@@ -44,18 +48,15 @@ public class cliente {
     }
 
     private void performDiffieHellman() throws Exception {
-        // Generar parámetros Diffie-Hellman
         KeyPairGenerator kpg = KeyPairGenerator.getInstance("DH");
         kpg.initialize(1024);
-        KeyPair clienteKeyPair = kpg.generateKeyPair();
-        PublicKey clientePublicKey = clienteKeyPair.getPublic();
-        PrivateKey clientePrivateKey = clienteKeyPair.getPrivate();
+        KeyPair clientKeyPair = kpg.generateKeyPair();
+        PublicKey clientPublicKey = clientKeyPair.getPublic();
+        PrivateKey clientPrivateKey = clientKeyPair.getPrivate();
 
-        // Enviar clave pública DH del clientee
-        output.write(clientePublicKey.getEncoded());
+        output.write(clientPublicKey.getEncoded());
         output.flush();
 
-        // Recibir clave pública DH del servidor y su firma
         int serverKeyLength = input.readInt();
         byte[] serverPublicKeyBytes = new byte[serverKeyLength];
         input.readFully(serverPublicKeyBytes);
@@ -64,7 +65,6 @@ public class cliente {
         byte[] signature = new byte[signatureLength];
         input.readFully(signature);
 
-        // Verificar firma con la clave pública RSA del servidor
         Signature sig = Signature.getInstance("SHA256withRSA");
         sig.initVerify(serverRSAPublicKey);
         sig.update(serverPublicKeyBytes);
@@ -72,17 +72,15 @@ public class cliente {
             throw new SecurityException("Firma DH inválida");
         }
 
-        // Generar secreto compartido
         KeyFactory kf = KeyFactory.getInstance("DH");
         X509EncodedKeySpec x509Spec = new X509EncodedKeySpec(serverPublicKeyBytes);
         PublicKey serverDHPublicKey = kf.generatePublic(x509Spec);
 
         KeyAgreement ka = KeyAgreement.getInstance("DH");
-        ka.init(clientePrivateKey);
+        ka.init(clientPrivateKey);
         ka.doPhase(serverDHPublicKey, true);
         byte[] sharedSecret = ka.generateSecret();
 
-        // Derivar claves K_AB1 y K_AB2 usando SHA-512
         MessageDigest sha512 = MessageDigest.getInstance("SHA-512");
         byte[] digest = sha512.digest(sharedSecret);
         byte[] aesKeyBytes = Arrays.copyOfRange(digest, 0, AES_KEY_LENGTH / 8);
@@ -114,91 +112,117 @@ public class cliente {
         return MessageDigest.isEqual(computedHMAC, receivedHMAC);
     }
 
-    private void run() throws Exception {
-        // Realizar intercambio de claves Diffie-Hellman
+    public void run() throws Exception {
         performDiffieHellman();
+        Random random = new Random();
+        int queryCount = scenario.equals("Iterativo") ? 32 : 1;
 
-        // Recibir tabla de servicios
-        int ivLength = input.readInt();
-        byte[] iv = new byte[ivLength];
-        input.readFully(iv);
+        for (int i = 0; i < queryCount; i++) {
+            int ivLength = input.readInt();
+            byte[] iv = new byte[ivLength];
+            input.readFully(iv);
 
-        int cipherLength = input.readInt();
-        byte[] cipherText = new byte[cipherLength];
-        input.readFully(cipherText);
+            int cipherLength = input.readInt();
+            byte[] cipherText = new byte[cipherLength];
+            input.readFully(cipherText);
 
-        int hmacLength = input.readInt();
-        byte[] hmac = new byte[hmacLength];
-        input.readFully(hmac);
+            int hmacLength = input.readInt();
+            byte[] hmac = new byte[hmacLength];
+            input.readFully(hmac);
 
-        // Descifrar y verificar HMAC
-        byte[] decryptedTable = decrypt(cipherText, iv);
-        if (!verifyHMAC(decryptedTable, hmac)) {
-            System.out.println("Error en la consulta: HMAC inválido");
-            socket.close();
-            return;
+            byte[] decryptedTable = decrypt(cipherText, iv);
+            if (!verifyHMAC(decryptedTable, hmac)) {
+                System.out.println("Error en la consulta: HMAC inválido");
+                socket.close();
+                return;
+            }
+
+            String table = new String(decryptedTable, "UTF-8");
+            System.out.println("Servicios disponibles:\n" + table);
+
+            int serviceId = random.nextInt(3) + 1;
+
+            String serviceRequest = String.valueOf(serviceId);
+            byte[] requestBytes = serviceRequest.getBytes("UTF-8");
+            byte[] requestIV = new byte[IV_LENGTH];
+            new SecureRandom().nextBytes(requestIV);
+            byte[] encryptedRequest = encrypt(requestBytes, requestIV);
+            byte[] requestHMAC = computeHMAC(requestBytes);
+
+            output.writeInt(requestIV.length);
+            output.write(requestIV);
+            output.writeInt(encryptedRequest.length);
+            output.write(encryptedRequest);
+            output.writeInt(requestHMAC.length);
+            output.write(requestHMAC);
+            output.flush();
+
+            ivLength = input.readInt();
+            iv = new byte[ivLength];
+            input.readFully(iv);
+
+            cipherLength = input.readInt();
+            cipherText = new byte[cipherLength];
+            input.readFully(cipherText);
+
+            hmacLength = input.readInt();
+            hmac = new byte[hmacLength];
+            input.readFully(hmac);
+
+            byte[] decryptedResponse = decrypt(cipherText, iv);
+            if (!verifyHMAC(decryptedResponse, hmac)) {
+                System.out.println("Error en la consulta: HMAC inválido");
+                socket.close();
+                return;
+            }
+
+            String response = new String(decryptedResponse, "UTF-8");
+            System.out.println("Consulta " + (i + 1) + ": Respuesta del servidor: " + response);
+
+            output.writeUTF("OK");
+            output.flush();
         }
-
-        // Mostrar tabla de servicios
-        String table = new String(decryptedTable, "UTF-8");
-        System.out.println("Servicios disponibles:\n" + table);
-
-        // Solicitar selección del usuario
-        Scanner scanner = new Scanner(System.in);
-        System.out.print("Ingrese el ID del servicio: ");
-        int serviceId = scanner.nextInt();
-
-        // Enviar solicitud de servicio
-        String serviceRequest = String.valueOf(serviceId);
-        byte[] requestBytes = serviceRequest.getBytes("UTF-8");
-        byte[] requestIV = new byte[IV_LENGTH];
-        new SecureRandom().nextBytes(requestIV);
-        byte[] encryptedRequest = encrypt(requestBytes, requestIV);
-        byte[] requestHMAC = computeHMAC(requestBytes);
-
-        output.writeInt(requestIV.length);
-        output.write(requestIV);
-        output.writeInt(encryptedRequest.length);
-        output.write(encryptedRequest);
-        output.writeInt(requestHMAC.length);
-        output.write(requestHMAC);
-        output.flush();
-
-        // Recibir respuesta
-        ivLength = input.readInt();
-        iv = new byte[ivLength];
-        input.readFully(iv);
-
-        cipherLength = input.readInt();
-        cipherText = new byte[cipherLength];
-        input.readFully(cipherText);
-
-        hmacLength = input.readInt();
-        hmac = new byte[hmacLength];
-        input.readFully(hmac);
-
-        // Descifrar y verificar respuesta
-        byte[] decryptedResponse = decrypt(cipherText, iv);
-        if (!verifyHMAC(decryptedResponse, hmac)) {
-            System.out.println("Error en la consulta: HMAC inválido");
-            socket.close();
-            return;
-        }
-
-        String response = new String(decryptedResponse, "UTF-8");
-        System.out.println("Respuesta del servidor: " + response);
-
-        // Enviar confirmación
-        output.writeUTF("OK");
-        output.flush();
 
         socket.close();
     }
 
+    private static void runConcurrentClients(int count, int repetition) throws Exception {
+        System.out.println("Ejecutando escenario Concurrente_" + count + ", repetición " + repetition);
+        Thread[] clients = new Thread[count];
+        for (int i = 0; i < count; i++) {
+            final int clientId = i + 1;
+            clients[i] = new Thread(() -> {
+                try {
+                    Cliente client = new Cliente();
+                    client.setScenario("Concurrente_" + count, clientId, repetition);
+                    client.run();
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            });
+            clients[i].start();
+        }
+        for (Thread client : clients) {
+            client.join();
+        }
+        System.out.println("Finalizado escenario Concurrente_" + count + ", repetición " + repetition);
+    }
+
     public static void main(String[] args) {
         try {
-            cliente cliente = new cliente();
-            cliente.run();
+            if (args.length > 0 && args[0].equals("concurrent")) {
+                int[] clientCounts = {4, 16, 32, 64};
+                int repetitions = 5;
+                for (int count : clientCounts) {
+                    for (int rep = 1; rep <= repetitions; rep++) {
+                        runConcurrentClients(count, rep);
+                        Thread.sleep(2000);
+                    }
+                }
+            } else {
+                Cliente client = new Cliente();
+                client.run();
+            }
         } catch (Exception e) {
             e.printStackTrace();
         }
