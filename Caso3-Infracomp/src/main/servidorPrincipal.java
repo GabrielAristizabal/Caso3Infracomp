@@ -18,6 +18,7 @@ public class ServidorPrincipal {
         services.put(2, "192.168.1.11:9002"); // Disponibilidad
         services.put(3, "192.168.1.12:9003"); // Costo
 
+        System.out.println("Servidor: Generando claves RSA");
         KeyPairGenerator kpg = KeyPairGenerator.getInstance("RSA");
         kpg.initialize(1024);
         rsaKeyPair = kpg.generateKeyPair();
@@ -27,6 +28,7 @@ public class ServidorPrincipal {
         try (FileOutputStream fos = new FileOutputStream("private.key")) {
             fos.write(rsaKeyPair.getPrivate().getEncoded());
         }
+        System.out.println("Servidor: Claves RSA generadas y guardadas");
     }
 
     private void start() throws Exception {
@@ -67,6 +69,7 @@ public class ServidorPrincipal {
         }
 
         private void performDiffieHellman() throws Exception {
+            System.out.println("Servidor: Iniciando Diffie-Hellman");
             KeyPairGenerator kpg = KeyPairGenerator.getInstance("DH");
             kpg.initialize(1024);
             KeyPair serverKeyPair = kpg.generateKeyPair();
@@ -81,19 +84,23 @@ public class ServidorPrincipal {
             long endSign = System.nanoTime();
             long signTime = endSign - startSign;
 
+            System.out.println("Servidor: Enviando clave pública RSA");
             output.writeInt(rsaKeyPair.getPublic().getEncoded().length);
             output.write(rsaKeyPair.getPublic().getEncoded());
             output.flush();
 
+            System.out.println("Servidor: Esperando clave pública DH del cliente");
             byte[] clientPublicKeyBytes = new byte[input.readInt()];
             input.readFully(clientPublicKeyBytes);
 
+            System.out.println("Servidor: Enviando clave pública DH y firma");
             output.writeInt(serverPublicKey.getEncoded().length);
             output.write(serverPublicKey.getEncoded());
             output.writeInt(signature.length);
             output.write(signature);
             output.flush();
 
+            System.out.println("Servidor: Generando secreto compartido");
             KeyFactory kf = KeyFactory.getInstance("DH");
             X509EncodedKeySpec x509Spec = new X509EncodedKeySpec(clientPublicKeyBytes);
             PublicKey clientPublicKey = kf.generatePublic(x509Spec);
@@ -111,6 +118,7 @@ public class ServidorPrincipal {
             hmacKey = new SecretKeySpec(hmacKeyBytes, "HmacSHA256");
 
             logTime(signTime, 0, 0, 0);
+            System.out.println("Servidor: Diffie-Hellman completado");
         }
 
         private byte[] encrypt(byte[] data, byte[] iv) throws Exception {
@@ -165,81 +173,94 @@ public class ServidorPrincipal {
             try {
                 performDiffieHellman();
 
-                String table = getServiceTable();
-                byte[] tableBytes = table.getBytes("UTF-8");
-                byte[] iv = new byte[IV_LENGTH];
-                new SecureRandom().nextBytes(iv);
-                long startEncrypt = System.nanoTime();
-                byte[] encryptedTable = encrypt(tableBytes, iv);
-                long endEncrypt = System.nanoTime();
-                long encryptTime = endEncrypt - startEncrypt;
-                byte[] tableHMAC = computeHMAC(tableBytes);
+                System.out.println("Servidor: Esperando número de consultas del cliente");
+                int queryCount = input.readInt();
+                System.out.println("Servidor: Número de consultas recibidas: " + queryCount);
 
-                output.writeInt(iv.length);
-                output.write(iv);
-                output.writeInt(encryptedTable.length);
-                output.write(encryptedTable);
-                output.writeInt(tableHMAC.length);
-                output.write(tableHMAC);
-                output.flush();
+                for (int i = 0; i < queryCount; i++) {
+                    System.out.println("Servidor: Enviando tabla de servicios (Consulta " + (i + 1) + ")");
+                    String table = getServiceTable();
+                    byte[] tableBytes = table.getBytes("UTF-8");
+                    byte[] iv = new byte[IV_LENGTH];
+                    new SecureRandom().nextBytes(iv);
+                    long startEncrypt = System.nanoTime();
+                    byte[] encryptedTable = encrypt(tableBytes, iv);
+                    long endEncrypt = System.nanoTime();
+                    long encryptTime = endEncrypt - startEncrypt;
+                    byte[] tableHMAC = computeHMAC(tableBytes);
 
-                int ivLength = input.readInt();
-                iv = new byte[ivLength];
-                input.readFully(iv);
+                    output.writeInt(iv.length);
+                    output.write(iv);
+                    output.writeInt(encryptedTable.length);
+                    output.write(encryptedTable);
+                    output.writeInt(tableHMAC.length);
+                    output.write(tableHMAC);
+                    output.flush();
 
-                int cipherLength = input.readInt();
-                byte[] cipherText = new byte[cipherLength];
-                input.readFully(cipherText);
+                    System.out.println("Servidor: Esperando solicitud del cliente");
+                    int ivLength = input.readInt();
+                    iv = new byte[ivLength];
+                    input.readFully(iv);
 
-                int hmacLength = input.readInt();
-                byte[] hmac = new byte[hmacLength];
-                input.readFully(hmac);
+                    int cipherLength = input.readInt();
+                    byte[] cipherText = new byte[cipherLength];
+                    input.readFully(cipherText);
 
-                byte[] decryptedRequest = decrypt(cipherText, iv);
-                long startVerify = System.nanoTime();
-                boolean hmacValid = verifyHMAC(decryptedRequest, hmac);
-                long endVerify = System.nanoTime();
-                long verifyTime = endVerify - startVerify;
+                    int hmacLength = input.readInt();
+                    byte[] hmac = new byte[hmacLength];
+                    input.readFully(hmac);
 
-                if (!hmacValid) {
-                    System.out.println("Error en la consulta: HMAC inválido");
-                    socket.close();
-                    return;
+                    System.out.println("Servidor: Descifrando solicitud");
+                    byte[] decryptedRequest = decrypt(cipherText, iv);
+                    long startVerify = System.nanoTime();
+                    boolean hmacValid = verifyHMAC(decryptedRequest, hmac);
+                    long endVerify = System.nanoTime();
+                    long verifyTime = endVerify - startVerify;
+
+                    if (!hmacValid) {
+                        System.out.println("Error en la consulta: HMAC inválido");
+                        socket.close();
+                        return;
+                    }
+
+                    String request = new String(decryptedRequest, "UTF-8");
+                    int serviceId = Integer.parseInt(request.trim());
+                    String response = services.getOrDefault(serviceId, "-1:-1");
+                    byte[] responseBytes = response.getBytes("UTF-8");
+
+                    long startRSAEncrypt = System.nanoTime();
+                    byte[] rsaEncryptedResponse = encryptRSA(responseBytes);
+                    long endRSAEncrypt = System.nanoTime();
+                    long rsaEncryptTime = endRSAEncrypt - startRSAEncrypt;
+
+                    System.out.println("Servidor: Enviando respuesta");
+                    new SecureRandom().nextBytes(iv);
+                    byte[] encryptedResponse = encrypt(responseBytes, iv);
+                    byte[] responseHMAC = computeHMAC(responseBytes);
+
+                    output.writeInt(iv.length);
+                    output.write(iv);
+                    output.writeInt(encryptedResponse.length);
+                    output.write(encryptedResponse);
+                    output.writeInt(responseHMAC.length);
+                    output.write(responseHMAC);
+                    output.flush();
+
+                    System.out.println("Servidor: Esperando confirmación");
+                    String confirmation = input.readUTF();
+                    if ("OK".equals(confirmation)) {
+                        System.out.println("Consulta " + (i + 1) + " procesada correctamente");
+                    } else {
+                        System.out.println("Error en la confirmación");
+                    }
+
+                    logTime(0, encryptTime, verifyTime, rsaEncryptTime);
                 }
 
-                String request = new String(decryptedRequest, "UTF-8");
-                int serviceId = Integer.parseInt(request.trim());
-                String response = services.getOrDefault(serviceId, "-1:-1");
-                byte[] responseBytes = response.getBytes("UTF-8");
-
-                long startRSAEncrypt = System.nanoTime();
-                byte[] rsaEncryptedResponse = encryptRSA(responseBytes);
-                long endRSAEncrypt = System.nanoTime();
-                long rsaEncryptTime = endRSAEncrypt - startRSAEncrypt;
-
-                new SecureRandom().nextBytes(iv);
-                byte[] encryptedResponse = encrypt(responseBytes, iv);
-                byte[] responseHMAC = computeHMAC(responseBytes);
-
-                output.writeInt(iv.length);
-                output.write(iv);
-                output.writeInt(encryptedResponse.length);
-                output.write(encryptedResponse);
-                output.writeInt(responseHMAC.length);
-                output.write(responseHMAC);
-                output.flush();
-
-                String confirmation = input.readUTF();
-                if ("OK".equals(confirmation)) {
-                    System.out.println("Consulta procesada correctamente");
-                } else {
-                    System.out.println("Error en la confirmación");
-                }
-
-                logTime(0, encryptTime, verifyTime, rsaEncryptTime);
-
+                System.out.println("Servidor: Finalizando (" + queryCount + " consultas completadas)");
                 socket.close();
             } catch (Exception e) {
+                System.out.println("Error en el manejador del cliente: " + e.getMessage());
                 e.printStackTrace();
             }
         }
@@ -290,6 +311,7 @@ public class ServidorPrincipal {
             ServidorPrincipal server = new ServidorPrincipal();
             server.start();
         } catch (Exception e) {
+            System.out.println("Error en el servidor: " + e.getMessage());
             e.printStackTrace();
         }
     }

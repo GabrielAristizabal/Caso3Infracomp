@@ -23,6 +23,7 @@ public class Cliente {
     private int repetition;
 
     public Cliente() throws Exception {
+        System.out.println("Cliente: Conectando al servidor en " + SERVER_ADDRESS + ":" + SERVER_PORT);
         socket = new Socket(SERVER_ADDRESS, SERVER_PORT);
         input = new DataInputStream(socket.getInputStream());
         output = new DataOutputStream(socket.getOutputStream());
@@ -39,32 +40,41 @@ public class Cliente {
     }
 
     private PublicKey receiveRSAPublicKey() throws Exception {
+        System.out.println("Cliente: Recibiendo clave pública RSA del servidor");
         int keyLength = input.readInt();
         byte[] keyBytes = new byte[keyLength];
         input.readFully(keyBytes);
         X509EncodedKeySpec spec = new X509EncodedKeySpec(keyBytes);
         KeyFactory kf = KeyFactory.getInstance("RSA");
+        System.out.println("Cliente: Clave pública RSA recibida");
         return kf.generatePublic(spec);
     }
 
     private void performDiffieHellman() throws Exception {
+        System.out.println("Cliente: Iniciando Diffie-Hellman");
         KeyPairGenerator kpg = KeyPairGenerator.getInstance("DH");
         kpg.initialize(1024);
         KeyPair clientKeyPair = kpg.generateKeyPair();
         PublicKey clientPublicKey = clientKeyPair.getPublic();
         PrivateKey clientPrivateKey = clientKeyPair.getPrivate();
 
-        output.write(clientPublicKey.getEncoded());
+        System.out.println("Cliente: Enviando clave pública DH");
+        byte[] clientPublicKeyBytes = clientPublicKey.getEncoded();
+        output.writeInt(clientPublicKeyBytes.length);
+        output.write(clientPublicKeyBytes);
         output.flush();
 
+        System.out.println("Cliente: Recibiendo clave pública DH del servidor");
         int serverKeyLength = input.readInt();
         byte[] serverPublicKeyBytes = new byte[serverKeyLength];
         input.readFully(serverPublicKeyBytes);
 
+        System.out.println("Cliente: Recibiendo firma del servidor");
         int signatureLength = input.readInt();
         byte[] signature = new byte[signatureLength];
         input.readFully(signature);
 
+        System.out.println("Cliente: Verificando firma");
         Signature sig = Signature.getInstance("SHA256withRSA");
         sig.initVerify(serverRSAPublicKey);
         sig.update(serverPublicKeyBytes);
@@ -72,6 +82,7 @@ public class Cliente {
             throw new SecurityException("Firma DH inválida");
         }
 
+        System.out.println("Cliente: Generando secreto compartido");
         KeyFactory kf = KeyFactory.getInstance("DH");
         X509EncodedKeySpec x509Spec = new X509EncodedKeySpec(serverPublicKeyBytes);
         PublicKey serverDHPublicKey = kf.generatePublic(x509Spec);
@@ -87,6 +98,7 @@ public class Cliente {
         byte[] hmacKeyBytes = Arrays.copyOfRange(digest, AES_KEY_LENGTH / 8, digest.length);
         aesKey = new SecretKeySpec(aesKeyBytes, "AES");
         hmacKey = new SecretKeySpec(hmacKeyBytes, "HmacSHA256");
+        System.out.println("Cliente: Diffie-Hellman completado");
     }
 
     private byte[] encrypt(byte[] data, byte[] iv) throws Exception {
@@ -114,10 +126,15 @@ public class Cliente {
 
     public void run() throws Exception {
         performDiffieHellman();
-        Random random = new Random();
-        int queryCount = scenario.equals("Iterativo") ? 32 : 1;
 
+        int queryCount = scenario.equals("Iterativo") ? 32 : 1;
+        System.out.println("Cliente: Enviando número de consultas: " + queryCount);
+        output.writeInt(queryCount);
+        output.flush();
+
+        Random random = new Random();
         for (int i = 0; i < queryCount; i++) {
+            System.out.println("Cliente: Recibiendo tabla de servicios (Consulta " + (i + 1) + ")");
             int ivLength = input.readInt();
             byte[] iv = new byte[ivLength];
             input.readFully(iv);
@@ -130,6 +147,7 @@ public class Cliente {
             byte[] hmac = new byte[hmacLength];
             input.readFully(hmac);
 
+            System.out.println("Cliente: Descifrando tabla");
             byte[] decryptedTable = decrypt(cipherText, iv);
             if (!verifyHMAC(decryptedTable, hmac)) {
                 System.out.println("Error en la consulta: HMAC inválido");
@@ -142,6 +160,7 @@ public class Cliente {
 
             int serviceId = random.nextInt(3) + 1;
 
+            System.out.println("Cliente: Enviando solicitud para servicio " + serviceId);
             String serviceRequest = String.valueOf(serviceId);
             byte[] requestBytes = serviceRequest.getBytes("UTF-8");
             byte[] requestIV = new byte[IV_LENGTH];
@@ -157,6 +176,7 @@ public class Cliente {
             output.write(requestHMAC);
             output.flush();
 
+            System.out.println("Cliente: Recibiendo respuesta");
             ivLength = input.readInt();
             iv = new byte[ivLength];
             input.readFully(iv);
@@ -169,6 +189,7 @@ public class Cliente {
             hmac = new byte[hmacLength];
             input.readFully(hmac);
 
+            System.out.println("Cliente: Descifrando respuesta");
             byte[] decryptedResponse = decrypt(cipherText, iv);
             if (!verifyHMAC(decryptedResponse, hmac)) {
                 System.out.println("Error en la consulta: HMAC inválido");
@@ -179,10 +200,12 @@ public class Cliente {
             String response = new String(decryptedResponse, "UTF-8");
             System.out.println("Consulta " + (i + 1) + ": Respuesta del servidor: " + response);
 
+            System.out.println("Cliente: Enviando confirmación");
             output.writeUTF("OK");
             output.flush();
         }
 
+        System.out.println("Cliente: Finalizando (" + queryCount + " consultas completadas)");
         socket.close();
     }
 
@@ -197,6 +220,7 @@ public class Cliente {
                     client.setScenario("Concurrente_" + count, clientId, repetition);
                     client.run();
                 } catch (Exception e) {
+                    System.out.println("Error en cliente concurrente " + clientId + ": " + e.getMessage());
                     e.printStackTrace();
                 }
             });
@@ -224,6 +248,7 @@ public class Cliente {
                 client.run();
             }
         } catch (Exception e) {
+            System.out.println("Error en el cliente: " + e.getMessage());
             e.printStackTrace();
         }
     }
